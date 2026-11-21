@@ -9,8 +9,6 @@ include:
 sync:
   include:
     - src/**
-  exclude:
-    - "**/__pycache__/**"
 
 variables:
   catalog:
@@ -41,11 +39,12 @@ targets:
         geotax_compare_job:
           tags:
             env: prod
-          # Release cadence is irregular, so the job looks daily; plan_states plans only the states that are behind the newest
-          # release, so a day without a new release costs seconds. Unpause once the first prod run has been checked.
+          # Weekly, Friday 22:30 Pacific time (America/Los_Angeles follows PST and PDT; 22:30 PST is Saturday 06:30 UTC).
+          # plan_states plans only the states that are behind the newest release, so a week without a new release costs about
+          # 2 minutes. Created paused: unpause once the first prod run has been checked.
           schedule:
-            quartz_cron_expression: "0 0 6 * * ?"
-            timezone_id: UTC
+            quartz_cron_expression: "0 30 22 ? * FRI"
+            timezone_id: America/Los_Angeles
             pause_status: PAUSED
           parameters:
             - name: states
