@@ -1,0 +1,15 @@
+# Databricks CLI / bundle state (contains workspace identifiers)
+.databricks/
+# local overrides, never commit
+*.local.yml
+.env
+.env.*
+# python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+# os / editor
+.DS_Store
+.idea/
+.vscode/

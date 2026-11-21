@@ -1,0 +1,88 @@
+resources:
+  jobs:
+    geotax_compare_job:
+      name: geotax_compare_job
+      description: >-
+        Enter one state, a comma-separated list, or ALL. The states run ONE AT A TIME (a child geotax_compare_state_job per
+        state). ALL plans only the states that are behind the newest address_book release; a state already at it is skipped
+        without any API call. A state processed before only re-processes its ADDED/UPDATED records and nulls its DELETED
+        ones. A state never processed needs allow_baseline=true (its first run bills every address). When the states are
+        done the pipeline refreshes silver quarantine and the gold reports.
+      tags:
+        project: geotax_compare
+      max_concurrent_runs: 1
+      queue:
+        enabled: true   # runs triggered while one is active wait their turn instead of being skipped
+      # A failed state fails its for_each iteration and therefore this job; success mails tell you a batch is finished.
+      email_notifications:
+        on_failure:
+          - ${var.alert_email}
+        on_success:
+          - ${var.alert_email}
+      parameters:
+        - name: states
+          default: ""   # AZ | AZ,CA,TX | ALL
+        - name: sample_size
+          default: "0"
+        - name: unit_size
+          default: "100000"
+        - name: geo_concurrency
+          default: "25"
+        - name: tax_concurrency
+          default: "6"
+        - name: tax_rate_per_sec   # Geo Tax calls/s per unit task (x 4 parallel units = 48/s; measured API limit is 50/s per key)
+          default: "12"
+        - name: fail_after_chunks   # fault injection for tests, leave 0
+          default: "0"
+        - name: allow_baseline   # true = a state with no finished run may be processed in full (expensive first run)
+          default: "false"
+        - name: source_current
+          default: address_book.silver.adf_usa_current
+        - name: source_feed
+          default: address_book.silver.adf_usa_change_feed
+        - name: source_releases
+          default: address_book.silver.adf_usa_releases
+      tasks:
+        - task_key: plan_states
+          notebook_task:
+            notebook_path: ../src/geotax_compare/job/00_plan_states.py
+            base_parameters:
+              states: "{{job.parameters.states}}"
+              source_current: "{{job.parameters.source_current}}"
+              source_releases: "{{job.parameters.source_releases}}"
+              sample_size: "{{job.parameters.sample_size}}"
+              allow_baseline: "{{job.parameters.allow_baseline}}"
+              catalog: ${var.catalog}
+
+        - task_key: process_states
+          depends_on:
+            - task_key: plan_states
+          for_each_task:
+            inputs: "{{tasks.plan_states.values.states}}"
+            concurrency: 1   # one state at a time: states share one API key quota and one results table
+            task:
+              task_key: process_state
+              max_retries: 0
+              run_job_task:
+                job_id: ${resources.jobs.geotax_compare_state_job.id}
+                job_parameters:
+                  state: "{{input}}"
+                  sample_size: "{{job.parameters.sample_size}}"
+                  unit_size: "{{job.parameters.unit_size}}"
+                  geo_concurrency: "{{job.parameters.geo_concurrency}}"
+                  tax_concurrency: "{{job.parameters.tax_concurrency}}"
+                  tax_rate_per_sec: "{{job.parameters.tax_rate_per_sec}}"
+                  fail_after_chunks: "{{job.parameters.fail_after_chunks}}"
+                  allow_baseline: "{{job.parameters.allow_baseline}}"
+                  source_current: "{{job.parameters.source_current}}"
+                  source_feed: "{{job.parameters.source_feed}}"
+                  source_releases: "{{job.parameters.source_releases}}"
+
+        # Refreshes silver quarantine and the gold reports from silver.results, even if one state failed:
+        # gold only shows states whose latest run is DONE.
+        - task_key: publish_reports
+          run_if: ALL_DONE
+          depends_on:
+            - task_key: process_states
+          pipeline_task:
+            pipeline_id: ${resources.pipelines.geotax_compare.id}

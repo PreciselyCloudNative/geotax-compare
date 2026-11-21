@@ -1,0 +1,113 @@
+resources:
+  jobs:
+    geotax_compare_state_job:
+      name: geotax_compare_state_job
+      description: >-
+        Processes ONE state against address_book. First run of a state: every current record (BASELINE). Later runs:
+        only the records ADDED, UPDATED or DELETED in releases after the state's watermark; ADDED/UPDATED are re-sent
+        to Geocode (option 2 and 3) and Geo Tax, DELETED records are nulled in silver.results. Normally started by
+        geotax_compare_job (one state at a time), but it can be run on its own. Billable API calls: about 4 per address.
+      max_concurrent_runs: 1
+      queue:
+        enabled: true
+      tags:
+        project: geotax_compare
+      parameters:
+        - name: state
+          default: ""
+        - name: sample_size
+          default: "0"   # 0 = every record; >0 = deterministic sample of that many records (testing; writes *_sample tables)
+        - name: unit_size
+          default: "100000"
+        - name: geo_concurrency   # per unit task; the job-wide total is this x 4 parallel units
+          default: "25"
+        - name: tax_concurrency   # Geo Tax is rate limited (measured 50 calls/s per key, 10 locations per call); calls take ~57 ms, so in-flight count matters less than the rate below
+          default: "6"
+        - name: tax_rate_per_sec   # per unit task; the job-wide total is this x 4 parallel units = 48 calls/s (measured limit 50/s: keep 4 x rate under it)
+          default: "12"
+        - name: fail_after_chunks   # fault injection for tests, 0 = off
+          default: "0"
+        - name: allow_baseline   # true = a state with no finished run may be processed in full (expensive first run)
+          default: "false"
+        - name: source_current
+          default: address_book.silver.adf_usa_current
+        - name: source_feed
+          default: address_book.silver.adf_usa_change_feed
+        - name: source_releases
+          default: address_book.silver.adf_usa_releases
+      tasks:
+        - task_key: gate
+          notebook_task:
+            notebook_path: ../src/geotax_compare/job/01_gate_and_load.py
+            base_parameters:
+              state: "{{job.parameters.state}}"
+              sample_size: "{{job.parameters.sample_size}}"
+              unit_size: "{{job.parameters.unit_size}}"
+              allow_baseline: "{{job.parameters.allow_baseline}}"
+              source_current: "{{job.parameters.source_current}}"
+              source_feed: "{{job.parameters.source_feed}}"
+              source_releases: "{{job.parameters.source_releases}}"
+              catalog: ${var.catalog}
+
+        - task_key: has_work
+          depends_on:
+            - task_key: gate
+          condition_task:
+            op: EQUAL_TO
+            left: "{{tasks.gate.values.go}}"
+            right: "true"
+
+        - task_key: has_pending_units
+          depends_on:
+            - task_key: has_work
+              outcome: "true"
+          condition_task:
+            op: GREATER_THAN
+            left: "{{tasks.gate.values.pending_count}}"
+            right: "0"
+
+        - task_key: process_units
+          depends_on:
+            - task_key: has_pending_units
+              outcome: "true"
+          for_each_task:
+            inputs: "{{tasks.gate.values.pending_units}}"
+            concurrency: 4
+            task:
+              task_key: process_unit
+              # Backstop for an API outage longer than the in-process circuit breaker's budget (~20 min). A retry is cheap:
+              # the unit resumes and only redoes addresses that have no staged result row yet.
+              max_retries: 2
+              min_retry_interval_millis: 300000
+              retry_on_timeout: false
+              timeout_seconds: 7200
+              notebook_task:
+                notebook_path: ../src/geotax_compare/job/03_process_unit.py
+                base_parameters:
+                  state: "{{input.state}}"
+                  unit_id: "{{input.unit_id}}"
+                  n_units: "{{input.n_units}}"
+                  batch_seq: "{{input.batch_seq}}"
+                  sample_size: "{{job.parameters.sample_size}}"
+                  geo_concurrency: "{{job.parameters.geo_concurrency}}"
+                  tax_concurrency: "{{job.parameters.tax_concurrency}}"
+                  tax_rate_per_sec: "{{job.parameters.tax_rate_per_sec}}"
+                  fail_after_chunks: "{{job.parameters.fail_after_chunks}}"
+                  catalog: ${var.catalog}
+
+        # Runs after the units succeeded, failed, or were skipped because no unit was pending (a delta with only deletes or
+        # nothing to geocode still has to merge and advance the watermark); never on the no-op branch.
+        - task_key: reconcile
+          run_if: ALL_DONE
+          depends_on:
+            - task_key: has_work
+              outcome: "true"
+            - task_key: process_units
+          notebook_task:
+            notebook_path: ../src/geotax_compare/job/04_reconcile.py
+            base_parameters:
+              state: "{{job.parameters.state}}"
+              n_units: "{{tasks.gate.values.n_units}}"
+              batch_seq: "{{tasks.gate.values.batch_seq}}"
+              sample_size: "{{job.parameters.sample_size}}"
+              catalog: ${var.catalog}

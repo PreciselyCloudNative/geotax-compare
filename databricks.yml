@@ -1,0 +1,55 @@
+# geotax_compare: Geocode option 2 vs option 3 -> Geo Tax comparison, incremental per state from the address_book catalog.
+# Docs: README.md and docs/.
+bundle:
+  name: geotax_compare
+
+include:
+  - resources/*.yml
+
+sync:
+  include:
+    - src/**
+  exclude:
+    - "**/__pycache__/**"
+
+variables:
+  catalog:
+    description: >-
+      Unity Catalog catalog that holds the geotax_compare_* schemas. The processing state (run_control watermarks, results) lives
+      in these tables, NOT in the bundle: deploying against a catalog that already holds the state continues from it, a different
+      catalog starts from nothing. Always pass the real value (--var catalog=... or BUNDLE_VAR_catalog).
+    default: main
+  alert_email:
+    description: Recipient of the job success and failure mails (a distribution list in prod).
+    default: ${workspace.current_user.userName}
+
+# The workspace is not hard-coded: select it with a Databricks CLI profile (--profile) or DATABRICKS_HOST.
+targets:
+  dev:
+    mode: development
+    default: true
+
+  prod:
+    mode: production
+    workspace:
+      root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}   # the deploying identity's folder: one copy, not world-writable
+    sync:
+      exclude:
+        - src/geotax_compare/tools/**   # test tooling is not shipped to prod
+    resources:
+      jobs:
+        geotax_compare_job:
+          tags:
+            env: prod
+          # Release cadence is irregular, so the job looks daily; plan_states plans only the states that are behind the newest
+          # release, so a day without a new release costs seconds. Unpause once the first prod run has been checked.
+          schedule:
+            quartz_cron_expression: "0 0 6 * * ?"
+            timezone_id: UTC
+            pause_status: PAUSED
+          parameters:
+            - name: states
+              default: ALL
+        geotax_compare_state_job:
+          tags:
+            env: prod

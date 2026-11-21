@@ -1,0 +1,14 @@
+resources:
+  pipelines:
+    geotax_compare:
+      name: geotax_compare
+      catalog: ${var.catalog}
+      schema: geotax_compare_bronze
+      serverless: true
+      continuous: false
+      root_path: ../src/geotax_compare
+      libraries:
+        - glob:
+            include: ../src/geotax_compare/transformations/**
+      configuration:
+        geotax.catalog: ${var.catalog}
