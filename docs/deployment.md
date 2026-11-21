@@ -6,7 +6,7 @@ The project is a Databricks Asset Bundle (`databricks.yml`) with two targets.
 |---|---|---|
 | Mode | `development` (resources prefixed with the user, schedules paused) | `production` |
 | Bundle files | `/Workspace/Users/<you>/.bundle/geotax_compare/dev` | `/Workspace/Users/<deploying identity>/.bundle/geotax_compare/prod` |
-| Schedule | none | daily 06:00 UTC, **created paused**: unpause after the first prod run has been checked |
+| Schedule | none | weekly, Friday 22:30 Pacific time, **created paused**: unpause after the first prod run has been checked |
 | `states` default | empty (you must say which) | `ALL` |
 | Test tools (`src/geotax_compare/tools/`) | deployed | not deployed |
 
@@ -63,13 +63,26 @@ The first run processed all 194.5M addresses at a cost of about 66 hours of proc
 3. Run the prod job once by hand with `states=ALL`. With nothing new it plans no state, skips the loop and refreshes the reports in about 2 minutes. If a newer release has arrived it processes only the changes.
 4. Unpause the schedule (`schedule.pause_status: UNPAUSED` in a pull request, or in the job settings).
 
+### Move the report tables to the prod pipeline
+
+A materialized view can belong to one pipeline only. If a dev pipeline already owns the silver `quarantine_records` and the six gold tables, the prod pipeline cannot write them until they are moved ([Databricks: move tables between pipelines](https://docs.databricks.com/aws/en/ldp/move-table)). Both pipelines must be idle and run as the same identity, in the same workspace. Once per table (7 tables), as that identity:
+
+```sql
+ALTER MATERIALIZED VIEW <catalog>.geotax_compare_silver.quarantine_records
+  SET TBLPROPERTIES ('pipelines.pipelineId' = '<prod pipeline id>');
+-- the same for geotax_compare_gold: comparison_summary, distance_distribution, geocode_tax_comparison,
+-- pipeline_funnel, quarantine_summary, tax_differences
+```
+
+The data stays in place; the next update of the prod pipeline refreshes the views. After the move, do **not** run the dev pipeline or the dev job any more (they share the tables); remove the dev deployment with `databricks bundle destroy -t dev`. To undo a move, run the same statement with the other pipeline's id.
+
 If the catalog is wrong, the plan finds no finished state, leaves every state out with a warning, and nothing is billed. Starting a state by name fails with `baseline refused`.
 
 **Dev and prod share the tables.** After the cut-over, run `ALL` only from prod. Dev runs against the same catalog change the same watermarks and results; use `sample_size` (writes `*_sample` tables) or a separate catalog for experiments.
 
 ## Repository and review
 
-`main` is protected by the `protect-main` ruleset: no deletion, no force push, and every change goes through a pull request with an approving review. CI (`.github/workflows/ci.yml`) runs the unit tests on every pull request. Bundle validation needs workspace access and is run by hand (`databricks bundle validate -t prod --strict`) before merging a change to `databricks.yml`, the jobs or the pipeline.
+`main` is protected by the `protect-main` ruleset: no deletion, no force push, and every change goes through a pull request with an approving review. CI (`.github/workflows/ci.yml`) runs the unit tests on every pull request. Bundle validation needs workspace access and is run by hand (`databricks bundle validate -t prod --strict`, which passes on a clean clone) before merging a change to `databricks.yml`, the jobs or the pipeline.
 
 ## Security
 

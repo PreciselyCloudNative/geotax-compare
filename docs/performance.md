@@ -68,7 +68,7 @@ First incremental run: release 2026.10.5 applied to the 52 states that were behi
 | Time per state | 28 to 69 seconds (median 61); API time is negligible at 1,573 calls |
 | Whole run | **98.7 minutes**: plan 0.5, 52 states 93.7, reports 4.6 |
 
-**A run with nothing new** (all states at the newest release): `plan_states` plans no states, the loop is skipped, and only the reports refresh. Measured: **2.0 minutes** in total (plan 27 s, reports 92 s). That is the cost of the daily prod schedule on a day without a release.
+**A run with nothing new** (all states at the newest release): `plan_states` plans no states, the loop is skipped, and only the reports refresh. Measured: **2.0 minutes** in total (plan 27 s, reports 92 s). That is the cost of a scheduled weekly run in a week without a release.
 
 **Estimate for a typical release.** A release that touches N states costs about N minutes plus 2 to 5 minutes for the reports, plus the API time of the changed addresses (about 350 addresses per second, so 100,000 changed addresses take 5 minutes). The first two releases after the baseline (21,061 and 4,480 added, 12,480 and 979 updated, together 14,062 addresses for the states that needed them) were applied in 98.7 minutes.
 
